@@ -9,7 +9,7 @@ import plotly.figure_factory as ff
 from fpdf import FPDF
 from dotenv import load_dotenv
 
-# ---------------- Load API (optional for future Groq) ----------------
+# ---------------- Load API (optional) ----------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
@@ -40,18 +40,27 @@ df_cleaned = clean_data(df)
 dataset_name = uploaded_file.name.replace(" ", "_")
 st.success(f"✅ Dataset `{uploaded_file.name}` uploaded and cleaned!")
 
-# ================= Sidebar Filters =================
-st.sidebar.header("Filter Options")
+# ================= Sidebar Filters (Top 3-4 only) =================
+st.sidebar.header("Important Filters")
 numeric_cols = df_cleaned.select_dtypes(include=np.number).columns.tolist()
 categorical_cols = df_cleaned.select_dtypes(include=['object','category']).columns.tolist()
 
+# Select top 2 numeric columns by variance
+num_variance = df_cleaned[numeric_cols].var()
+top_numeric = num_variance.sort_values(ascending=False).head(2).index.tolist()
+
+# Select top 2 categorical columns by unique values (≤10)
+cat_unique = {col: df_cleaned[col].nunique() for col in categorical_cols if df_cleaned[col].nunique() <= 10}
+top_categorical = list(cat_unique.keys())[:2]
+
+# Sidebar filters
 filters = {}
-for col in categorical_cols:
+for col in top_categorical:
     options = df_cleaned[col].unique().tolist()
     selected = st.sidebar.multiselect(f"Select {col}", options, default=options)
     filters[col] = selected
 
-for col in numeric_cols:
+for col in top_numeric:
     min_val = float(df_cleaned[col].min())
     max_val = float(df_cleaned[col].max())
     selected = st.sidebar.slider(f"{col} range", min_val, max_val, (min_val, max_val))
@@ -60,9 +69,9 @@ for col in numeric_cols:
 # Apply filters
 df_filtered = df_cleaned.copy()
 for col, val in filters.items():
-    if col in categorical_cols:
+    if col in top_categorical:
         df_filtered = df_filtered[df_filtered[col].isin(val)]
-    else:
+    elif col in top_numeric:
         df_filtered = df_filtered[(df_filtered[col] >= val[0]) & (df_filtered[col] <= val[1])]
 
 st.subheader("📊 Filtered Dataset Preview (first 4 rows)")
@@ -72,52 +81,50 @@ st.dataframe(df_filtered.head(4))
 st.subheader("📈 Dataset Insights")
 
 # Numeric KPIs
-if numeric_cols:
-    st.markdown("### Numeric KPIs")
-    kpi_cols = st.columns(len(numeric_cols))
-    for i, col in enumerate(numeric_cols):
-        mean_val = df_filtered[col].mean()
-        sum_val = df_filtered[col].sum()
-        max_val = df_filtered[col].max()
-        min_val = df_filtered[col].min()
-        kpi_cols[i].metric(label=f"{col} Mean", value=f"{mean_val:.2f}")
-        kpi_cols[i].metric(label=f"{col} Sum", value=f"{sum_val:.2f}")
+st.markdown("### Numeric KPIs")
+for col in top_numeric:
+    mean_val = df_filtered[col].mean()
+    sum_val = df_filtered[col].sum()
+    max_val = df_filtered[col].max()
+    min_val = df_filtered[col].min()
+    st.metric(f"{col} Mean", f"{mean_val:.2f}")
+    st.metric(f"{col} Sum", f"{sum_val:.2f}")
+    st.metric(f"{col} Max", f"{max_val:.2f}")
+    st.metric(f"{col} Min", f"{min_val:.2f}")
 
 # Categorical top values
-if categorical_cols:
-    st.markdown("### Top Categorical Values")
-    for col in categorical_cols:
-        top = df_filtered[col].value_counts().head(3)
-        st.write(f"**{col}:**")
-        st.table(top)
+st.markdown("### Top Categorical Values")
+for col in top_categorical:
+    top = df_filtered[col].value_counts().head(4)
+    st.write(f"**{col}:**")
+    st.table(top)
 
 # ================= Visualization Agent =================
 st.subheader("📊 Visualizations")
 
-# Pie chart for first categorical column
-if categorical_cols:
-    for col in categorical_cols[:2]:
-        fig = px.pie(df_filtered, names=col, values=df_filtered[col].map(lambda x:1),
-                     title=f"{col} Distribution", template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
+# Pie chart for categorical
+for col in top_categorical:
+    fig = px.pie(df_filtered, names=col, values=df_filtered[col].map(lambda x:1),
+                 title=f"{col} Distribution", template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
-# Histogram for numeric columns
-if numeric_cols:
-    for col in numeric_cols[:3]:
-        fig = px.histogram(df_filtered, x=col, nbins=20,
-                           title=f"{col} Distribution", template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
+# Histogram & boxplots for numeric
+for col in top_numeric:
+    fig_hist = px.histogram(df_filtered, x=col, nbins=20, title=f"{col} Histogram", template="plotly_dark")
+    st.plotly_chart(fig_hist, use_container_width=True)
+    fig_box = px.box(df_filtered, y=col, title=f"{col} Boxplot", template="plotly_dark")
+    st.plotly_chart(fig_box, use_container_width=True)
 
-# Scatter between first two numeric columns
-if len(numeric_cols) >= 2:
-    fig = px.scatter(df_filtered, x=numeric_cols[0], y=numeric_cols[1],
-                     color=categorical_cols[0] if categorical_cols else None,
-                     title=f"{numeric_cols[0]} vs {numeric_cols[1]}", template="plotly_dark")
+# Scatter plot between top 2 numeric
+if len(top_numeric) == 2:
+    fig = px.scatter(df_filtered, x=top_numeric[0], y=top_numeric[1],
+                     color=top_categorical[0] if top_categorical else None,
+                     title=f"{top_numeric[0]} vs {top_numeric[1]}", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
 # Correlation heatmap
-if numeric_cols:
-    corr = df_filtered[numeric_cols].corr()
+if top_numeric:
+    corr = df_filtered[top_numeric].corr()
     fig = ff.create_annotated_heatmap(z=corr.values, x=list(corr.columns), y=list(corr.columns),
                                       colorscale='Viridis')
     st.plotly_chart(fig, use_container_width=True)
@@ -137,7 +144,7 @@ def create_pdf(df_preview, numeric, categorical):
         pdf.cell(0, 8, f"{col} Mean: {df_preview[col].mean():.2f}, Sum: {df_preview[col].sum():.2f}", ln=True)
     pdf.cell(0, 10, "Top Categorical Values:", ln=True)
     for col in categorical:
-        top = df_preview[col].value_counts().head(3)
+        top = df_preview[col].value_counts().head(4)
         pdf.cell(0, 8, f"{col}: {top.to_dict()}", ln=True)
     pdf_bytes = io.BytesIO()
     pdf.output(pdf_bytes)
@@ -145,7 +152,7 @@ def create_pdf(df_preview, numeric, categorical):
     return pdf_bytes
 
 if st.button("📥 Download Insights PDF"):
-    pdf_file = create_pdf(df_filtered.head(4), numeric_cols, categorical_cols)
+    pdf_file = create_pdf(df_filtered.head(4), top_numeric, top_categorical)
     st.download_button("Download PDF", pdf_file, file_name=f"{dataset_name}_insights.pdf", mime="application/pdf")
 
 # ================= Dashboard.py Agent =================
@@ -163,28 +170,39 @@ df = pd.DataFrame({df_head.to_dict()})
 st.subheader("Dataset Preview")
 st.dataframe(df.head())
 
-# KPIs
+# Numeric KPIs
 st.subheader("Numeric KPIs")
 """
     for col in numeric:
         code += f"""
 st.metric("{col} Mean", df['{col}'].mean())
 st.metric("{col} Sum", df['{col}'].sum())
+st.metric("{col} Max", df['{col}'].max())
+st.metric("{col} Min", df['{col}'].min())
 """
     for col in categorical:
         code += f"""
-st.subheader("Top {col} values")
-st.table(df['{col}'].value_counts().head(5))
+st.subheader("Top {col} Values")
+st.table(df['{col}'].value_counts().head(4))
 """
-    # Add simple chart
-    for col in numeric[:2]:
+    # Plots
+    for col in numeric:
         code += f"""
-fig = px.histogram(df, x='{col}', nbins=20, title='{col} Distribution')
+fig = px.histogram(df, x='{col}', nbins=20, title='{col} Histogram')
+st.plotly_chart(fig, use_container_width=True)
+fig_box = px.box(df, y='{col}', title='{col} Boxplot')
+st.plotly_chart(fig_box, use_container_width=True)
+"""
+    if len(numeric) == 2:
+        code += f"""
+fig = px.scatter(df, x='{numeric[0]}', y='{numeric[1]}', 
+                 color='{categorical[0]}' if '{categorical}' else None,
+                 title='{numeric[0]} vs {numeric[1]}')
 st.plotly_chart(fig, use_container_width=True)
 """
     return code
 
 if st.button("📥 Download Dashboard.py"):
-    dashboard_code = create_dashboard_code(df_filtered.head(4), numeric_cols, categorical_cols)
+    dashboard_code = create_dashboard_code(df_filtered.head(4), top_numeric, top_categorical)
     st.download_button("Download Dashboard.py", dashboard_code.encode("utf-8"),
                        file_name=f"{dataset_name}_dashboard.py", mime="text/x-python")
